@@ -359,6 +359,9 @@ export function MCQApp() {
         <div className="mx-auto max-w-3xl px-4 py-6">
           <div className="flex items-center justify-between rounded-lg border border-border bg-card px-4 py-3">
             <div className="text-sm text-muted-foreground">
+              {moduleTitle && (
+                <div className="font-medium text-foreground">{moduleTitle}</div>
+              )}
               Question {current + 1} / {questions.length} · Answered {totalAnswered}
             </div>
             <div

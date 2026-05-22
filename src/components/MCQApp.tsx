@@ -147,6 +147,7 @@ export function MCQApp() {
   const endAtRef = useRef<number>(0);
 
   const [lastResult, setLastResult] = useState<any>(null);
+  const [moduleTitle, setModuleTitle] = useState<string | undefined>(undefined);
 
   useEffect(() => {
     setJsonText(localStorage.getItem(LS_JSON) ?? "");
@@ -176,10 +177,11 @@ export function MCQApp() {
   function startTest() {
     setError(null);
     try {
-      const qs = normalize(jsonText);
+      const { questions: qs, title } = normalize(jsonText);
       if (qs.length === 0) throw new Error("No questions found");
       localStorage.setItem(LS_JSON, jsonText);
       localStorage.setItem(LS_TIME, String(minutes));
+      setModuleTitle(title);
       setQuestions(qs);
       setAnswers(Array(qs.length).fill(null));
       setPerQTime(Array(qs.length).fill(0));

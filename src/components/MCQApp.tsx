@@ -474,10 +474,17 @@ export function MCQApp() {
           {r.questions.map((q: Question, i: number) => {
             const userAns = r.answers[i];
             const correct = userAns === q.answerIndex;
+            const keyFor = (idx: number) =>
+              q.optionKeys?.[idx] ?? String.fromCharCode(65 + idx);
             return (
               <div key={i} className="rounded-lg border border-border bg-card p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div className="text-sm font-medium">
+                    {q.domain && (
+                      <div className="mb-1 text-xs font-normal text-muted-foreground">
+                        {q.domain}
+                      </div>
+                    )}
                     {i + 1}. {q.question}
                   </div>
                   <div className="shrink-0 text-xs text-muted-foreground">
@@ -503,14 +510,49 @@ export function MCQApp() {
                   <div className="mt-2 text-muted-foreground">
                     Your answer:{" "}
                     <span className="text-foreground">
-                      {userAns === null ? "—" : q.options[userAns]}
+                      {userAns === null
+                        ? "—"
+                        : `${keyFor(userAns)}. ${q.options[userAns]}`}
                     </span>
                   </div>
                   {!correct && (
                     <div className="text-muted-foreground">
                       Correct answer:{" "}
-                      <span className="text-foreground">{q.options[q.answerIndex]}</span>
+                      <span className="text-foreground">
+                        {keyFor(q.answerIndex)}. {q.options[q.answerIndex]}
+                      </span>
                     </div>
+                  )}
+                  {(q.rationaleCorrect || q.rationaleIncorrect || q.hint) && (
+                    <details className="mt-3 rounded-md border border-border bg-background p-3">
+                      <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
+                        Explanation
+                      </summary>
+                      <div className="mt-2 space-y-2 text-xs">
+                        {q.hint && (
+                          <p>
+                            <span className="font-semibold">Hint: </span>
+                            <span className="text-muted-foreground">{q.hint}</span>
+                          </p>
+                        )}
+                        {q.rationaleCorrect && (
+                          <p>
+                            <span className="font-semibold">Why correct: </span>
+                            <span className="text-muted-foreground">
+                              {q.rationaleCorrect}
+                            </span>
+                          </p>
+                        )}
+                        {q.rationaleIncorrect && (
+                          <p>
+                            <span className="font-semibold">Why others are wrong: </span>
+                            <span className="text-muted-foreground">
+                              {q.rationaleIncorrect}
+                            </span>
+                          </p>
+                        )}
+                      </div>
+                    </details>
                   )}
                 </div>
               </div>

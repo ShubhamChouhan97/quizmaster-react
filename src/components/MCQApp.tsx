@@ -1,20 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-type RawQuestion = {
-  question?: string;
-  q?: string;
-  text?: string;
-  options?: string[];
-  choices?: string[];
-  answer?: number | string;
-  correct?: number | string;
-  correctAnswer?: number | string;
-};
-
 type Question = {
   question: string;
   options: string[];
+  optionKeys?: string[]; // e.g. ["A","B","C","D"] if source used a map
   answerIndex: number;
+  domain?: string;
+  hint?: string;
+  rationaleCorrect?: string;
+  rationaleIncorrect?: string;
 };
 
 type Phase = "setup" | "test" | "results";
@@ -23,37 +17,94 @@ const LS_JSON = "mcq.jsonInput";
 const LS_TIME = "mcq.totalMinutes";
 const LS_LAST = "mcq.lastResult";
 
-function normalize(raw: unknown): Question[] {
+function normalize(raw: unknown): { questions: Question[]; title?: string } {
   let data: any = raw;
   if (typeof raw === "string") data = JSON.parse(raw);
-  if (!Array.isArray(data)) {
-    if (data && Array.isArray(data.questions)) data = data.questions;
-    else throw new Error("JSON must be an array of questions");
+  let title: string | undefined;
+  let list: any[];
+  if (Array.isArray(data)) {
+    list = data;
+  } else if (data && Array.isArray(data.questions)) {
+    list = data.questions;
+    title = data.module_info?.title ?? data.title;
+  } else {
+    throw new Error("JSON must be an array of questions or have a 'questions' array");
   }
-  return data.map((item: RawQuestion, i: number) => {
-    const question = item.question ?? item.q ?? item.text;
-    const options = item.options ?? item.choices;
-    let ans = item.answer ?? item.correct ?? item.correctAnswer;
-    if (!question || !Array.isArray(options) || options.length < 2) {
+
+  const questions = list.map((item: any, i: number) => {
+    const question: string | undefined =
+      item.question ?? item.scenario ?? item.q ?? item.text;
+
+    // options can be array or object map ({A:"...", B:"..."})
+    let optionsArr: string[];
+    let optionKeys: string[] | undefined;
+    const rawOpts = item.options ?? item.choices;
+    if (Array.isArray(rawOpts)) {
+      optionsArr = rawOpts.map(String);
+    } else if (rawOpts && typeof rawOpts === "object") {
+      optionKeys = Object.keys(rawOpts);
+      optionsArr = optionKeys.map((k) => String(rawOpts[k]));
+    } else {
+      throw new Error(`Question ${i + 1}: missing options`);
+    }
+
+    if (!question || optionsArr.length < 2) {
       throw new Error(`Question ${i + 1} is missing question/options`);
     }
+
+    const ans = item.answer ?? item.correct ?? item.correctAnswer ?? item.correct_answer;
     let answerIndex: number;
-    if (typeof ans === "number") answerIndex = ans;
-    else if (typeof ans === "string") {
-      const asNum = Number(ans);
-      if (!Number.isNaN(asNum)) answerIndex = asNum;
-      else {
-        const idx = options.findIndex((o) => o === ans);
-        if (idx === -1) throw new Error(`Question ${i + 1}: answer not found in options`);
-        answerIndex = idx;
+    if (typeof ans === "number") {
+      answerIndex = ans;
+    } else if (typeof ans === "string") {
+      // try option key match first (e.g. "A","B")
+      if (optionKeys) {
+        const ki = optionKeys.indexOf(ans);
+        if (ki !== -1) answerIndex = ki;
+        else {
+          const vi = optionsArr.indexOf(ans);
+          if (vi !== -1) answerIndex = vi;
+          else {
+            const asNum = Number(ans);
+            if (!Number.isNaN(asNum)) answerIndex = asNum;
+            else throw new Error(`Question ${i + 1}: answer "${ans}" not in options`);
+          }
+        }
+      } else {
+        const asNum = Number(ans);
+        if (!Number.isNaN(asNum)) {
+          answerIndex = asNum;
+        } else {
+          const vi = optionsArr.indexOf(ans);
+          if (vi !== -1) answerIndex = vi;
+          else {
+            // letter like "A" mapped to index
+            const upper = ans.trim().toUpperCase();
+            if (/^[A-Z]$/.test(upper)) answerIndex = upper.charCodeAt(0) - 65;
+            else throw new Error(`Question ${i + 1}: answer not found in options`);
+          }
+        }
       }
     } else {
       throw new Error(`Question ${i + 1} is missing an answer`);
     }
-    if (answerIndex < 0 || answerIndex >= options.length)
+
+    if (answerIndex < 0 || answerIndex >= optionsArr.length)
       throw new Error(`Question ${i + 1}: answer index out of range`);
-    return { question, options, answerIndex };
+
+    return {
+      question,
+      options: optionsArr,
+      optionKeys,
+      answerIndex,
+      domain: item.domain,
+      hint: item.hint,
+      rationaleCorrect: item.rationales?.correct,
+      rationaleIncorrect: item.rationales?.incorrect,
+    } as Question;
   });
+
+  return { questions, title };
 }
 
 const SAMPLE = JSON.stringify(
@@ -96,6 +147,7 @@ export function MCQApp() {
   const endAtRef = useRef<number>(0);
 
   const [lastResult, setLastResult] = useState<any>(null);
+  const [moduleTitle, setModuleTitle] = useState<string | undefined>(undefined);
 
   useEffect(() => {
     setJsonText(localStorage.getItem(LS_JSON) ?? "");
@@ -125,10 +177,11 @@ export function MCQApp() {
   function startTest() {
     setError(null);
     try {
-      const qs = normalize(jsonText);
+      const { questions: qs, title } = normalize(jsonText);
       if (qs.length === 0) throw new Error("No questions found");
       localStorage.setItem(LS_JSON, jsonText);
       localStorage.setItem(LS_TIME, String(minutes));
+      setModuleTitle(title);
       setQuestions(qs);
       setAnswers(Array(qs.length).fill(null));
       setPerQTime(Array(qs.length).fill(0));
@@ -306,6 +359,9 @@ export function MCQApp() {
         <div className="mx-auto max-w-3xl px-4 py-6">
           <div className="flex items-center justify-between rounded-lg border border-border bg-card px-4 py-3">
             <div className="text-sm text-muted-foreground">
+              {moduleTitle && (
+                <div className="font-medium text-foreground">{moduleTitle}</div>
+              )}
               Question {current + 1} / {questions.length} · Answered {totalAnswered}
             </div>
             <div
@@ -318,10 +374,16 @@ export function MCQApp() {
           </div>
 
           <div className="mt-4 rounded-lg border border-border bg-card p-6">
+            {q.domain && (
+              <div className="mb-2 inline-block rounded bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
+                {q.domain}
+              </div>
+            )}
             <h2 className="text-lg font-semibold leading-snug">{q.question}</h2>
             <div className="mt-4 grid gap-2">
               {q.options.map((opt, i) => {
                 const selected = answers[current] === i;
+                const key = q.optionKeys?.[i] ?? String.fromCharCode(65 + i);
                 return (
                   <button
                     key={i}
@@ -333,7 +395,7 @@ export function MCQApp() {
                     }`}
                   >
                     <span className="mr-2 font-mono text-xs text-muted-foreground">
-                      {String.fromCharCode(65 + i)}.
+                      {key}.
                     </span>
                     {opt}
                   </button>
@@ -415,10 +477,17 @@ export function MCQApp() {
           {r.questions.map((q: Question, i: number) => {
             const userAns = r.answers[i];
             const correct = userAns === q.answerIndex;
+            const keyFor = (idx: number) =>
+              q.optionKeys?.[idx] ?? String.fromCharCode(65 + idx);
             return (
               <div key={i} className="rounded-lg border border-border bg-card p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div className="text-sm font-medium">
+                    {q.domain && (
+                      <div className="mb-1 text-xs font-normal text-muted-foreground">
+                        {q.domain}
+                      </div>
+                    )}
                     {i + 1}. {q.question}
                   </div>
                   <div className="shrink-0 text-xs text-muted-foreground">
@@ -444,14 +513,49 @@ export function MCQApp() {
                   <div className="mt-2 text-muted-foreground">
                     Your answer:{" "}
                     <span className="text-foreground">
-                      {userAns === null ? "—" : q.options[userAns]}
+                      {userAns === null
+                        ? "—"
+                        : `${keyFor(userAns)}. ${q.options[userAns]}`}
                     </span>
                   </div>
                   {!correct && (
                     <div className="text-muted-foreground">
                       Correct answer:{" "}
-                      <span className="text-foreground">{q.options[q.answerIndex]}</span>
+                      <span className="text-foreground">
+                        {keyFor(q.answerIndex)}. {q.options[q.answerIndex]}
+                      </span>
                     </div>
+                  )}
+                  {(q.rationaleCorrect || q.rationaleIncorrect || q.hint) && (
+                    <details className="mt-3 rounded-md border border-border bg-background p-3">
+                      <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
+                        Explanation
+                      </summary>
+                      <div className="mt-2 space-y-2 text-xs">
+                        {q.hint && (
+                          <p>
+                            <span className="font-semibold">Hint: </span>
+                            <span className="text-muted-foreground">{q.hint}</span>
+                          </p>
+                        )}
+                        {q.rationaleCorrect && (
+                          <p>
+                            <span className="font-semibold">Why correct: </span>
+                            <span className="text-muted-foreground">
+                              {q.rationaleCorrect}
+                            </span>
+                          </p>
+                        )}
+                        {q.rationaleIncorrect && (
+                          <p>
+                            <span className="font-semibold">Why others are wrong: </span>
+                            <span className="text-muted-foreground">
+                              {q.rationaleIncorrect}
+                            </span>
+                          </p>
+                        )}
+                      </div>
+                    </details>
                   )}
                 </div>
               </div>

@@ -371,10 +371,16 @@ export function MCQApp() {
           </div>
 
           <div className="mt-4 rounded-lg border border-border bg-card p-6">
+            {q.domain && (
+              <div className="mb-2 inline-block rounded bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
+                {q.domain}
+              </div>
+            )}
             <h2 className="text-lg font-semibold leading-snug">{q.question}</h2>
             <div className="mt-4 grid gap-2">
               {q.options.map((opt, i) => {
                 const selected = answers[current] === i;
+                const key = q.optionKeys?.[i] ?? String.fromCharCode(65 + i);
                 return (
                   <button
                     key={i}
@@ -386,7 +392,7 @@ export function MCQApp() {
                     }`}
                   >
                     <span className="mr-2 font-mono text-xs text-muted-foreground">
-                      {String.fromCharCode(65 + i)}.
+                      {key}.
                     </span>
                     {opt}
                   </button>

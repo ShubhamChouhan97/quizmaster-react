@@ -169,7 +169,7 @@ export function MCQApp() {
   function finishTest() {
     recordTimeForCurrent();
     setPerQTime((prevTimes) => {
-      const score = answers.reduce(
+      const score = answers.reduce<number>(
         (acc, a, i) => acc + (a !== null && a === questions[i].answerIndex ? 1 : 0),
         0
       );

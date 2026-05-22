@@ -1,20 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-type RawQuestion = {
-  question?: string;
-  q?: string;
-  text?: string;
-  options?: string[];
-  choices?: string[];
-  answer?: number | string;
-  correct?: number | string;
-  correctAnswer?: number | string;
-};
-
 type Question = {
   question: string;
   options: string[];
+  optionKeys?: string[]; // e.g. ["A","B","C","D"] if source used a map
   answerIndex: number;
+  domain?: string;
+  hint?: string;
+  rationaleCorrect?: string;
+  rationaleIncorrect?: string;
 };
 
 type Phase = "setup" | "test" | "results";
@@ -23,37 +17,94 @@ const LS_JSON = "mcq.jsonInput";
 const LS_TIME = "mcq.totalMinutes";
 const LS_LAST = "mcq.lastResult";
 
-function normalize(raw: unknown): Question[] {
+function normalize(raw: unknown): { questions: Question[]; title?: string } {
   let data: any = raw;
   if (typeof raw === "string") data = JSON.parse(raw);
-  if (!Array.isArray(data)) {
-    if (data && Array.isArray(data.questions)) data = data.questions;
-    else throw new Error("JSON must be an array of questions");
+  let title: string | undefined;
+  let list: any[];
+  if (Array.isArray(data)) {
+    list = data;
+  } else if (data && Array.isArray(data.questions)) {
+    list = data.questions;
+    title = data.module_info?.title ?? data.title;
+  } else {
+    throw new Error("JSON must be an array of questions or have a 'questions' array");
   }
-  return data.map((item: RawQuestion, i: number) => {
-    const question = item.question ?? item.q ?? item.text;
-    const options = item.options ?? item.choices;
-    let ans = item.answer ?? item.correct ?? item.correctAnswer;
-    if (!question || !Array.isArray(options) || options.length < 2) {
+
+  const questions = list.map((item: any, i: number) => {
+    const question: string | undefined =
+      item.question ?? item.scenario ?? item.q ?? item.text;
+
+    // options can be array or object map ({A:"...", B:"..."})
+    let optionsArr: string[];
+    let optionKeys: string[] | undefined;
+    const rawOpts = item.options ?? item.choices;
+    if (Array.isArray(rawOpts)) {
+      optionsArr = rawOpts.map(String);
+    } else if (rawOpts && typeof rawOpts === "object") {
+      optionKeys = Object.keys(rawOpts);
+      optionsArr = optionKeys.map((k) => String(rawOpts[k]));
+    } else {
+      throw new Error(`Question ${i + 1}: missing options`);
+    }
+
+    if (!question || optionsArr.length < 2) {
       throw new Error(`Question ${i + 1} is missing question/options`);
     }
+
+    const ans = item.answer ?? item.correct ?? item.correctAnswer ?? item.correct_answer;
     let answerIndex: number;
-    if (typeof ans === "number") answerIndex = ans;
-    else if (typeof ans === "string") {
-      const asNum = Number(ans);
-      if (!Number.isNaN(asNum)) answerIndex = asNum;
-      else {
-        const idx = options.findIndex((o) => o === ans);
-        if (idx === -1) throw new Error(`Question ${i + 1}: answer not found in options`);
-        answerIndex = idx;
+    if (typeof ans === "number") {
+      answerIndex = ans;
+    } else if (typeof ans === "string") {
+      // try option key match first (e.g. "A","B")
+      if (optionKeys) {
+        const ki = optionKeys.indexOf(ans);
+        if (ki !== -1) answerIndex = ki;
+        else {
+          const vi = optionsArr.indexOf(ans);
+          if (vi !== -1) answerIndex = vi;
+          else {
+            const asNum = Number(ans);
+            if (!Number.isNaN(asNum)) answerIndex = asNum;
+            else throw new Error(`Question ${i + 1}: answer "${ans}" not in options`);
+          }
+        }
+      } else {
+        const asNum = Number(ans);
+        if (!Number.isNaN(asNum)) {
+          answerIndex = asNum;
+        } else {
+          const vi = optionsArr.indexOf(ans);
+          if (vi !== -1) answerIndex = vi;
+          else {
+            // letter like "A" mapped to index
+            const upper = ans.trim().toUpperCase();
+            if (/^[A-Z]$/.test(upper)) answerIndex = upper.charCodeAt(0) - 65;
+            else throw new Error(`Question ${i + 1}: answer not found in options`);
+          }
+        }
       }
     } else {
       throw new Error(`Question ${i + 1} is missing an answer`);
     }
-    if (answerIndex < 0 || answerIndex >= options.length)
+
+    if (answerIndex < 0 || answerIndex >= optionsArr.length)
       throw new Error(`Question ${i + 1}: answer index out of range`);
-    return { question, options, answerIndex };
+
+    return {
+      question,
+      options: optionsArr,
+      optionKeys,
+      answerIndex,
+      domain: item.domain,
+      hint: item.hint,
+      rationaleCorrect: item.rationales?.correct,
+      rationaleIncorrect: item.rationales?.incorrect,
+    } as Question;
   });
+
+  return { questions, title };
 }
 
 const SAMPLE = JSON.stringify(

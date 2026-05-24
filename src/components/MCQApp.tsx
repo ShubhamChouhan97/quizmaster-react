@@ -142,6 +142,8 @@ export function MCQApp() {
   const [answers, setAnswers] = useState<(number | null)[]>([]);
   const [perQTime, setPerQTime] = useState<number[]>([]);
   const [remaining, setRemaining] = useState(0);
+  const [showHint, setShowHint] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
 
   const qStartRef = useRef<number>(0);
   const endAtRef = useRef<number>(0);
@@ -163,6 +165,14 @@ export function MCQApp() {
 
   useEffect(() => {
     if (phase !== "test") return;
+    if (minutes === 0) {
+      // untimed: count up
+      const startedAt = Date.now() - elapsed * 1000;
+      const tick = () => setElapsed(Math.floor((Date.now() - startedAt) / 1000));
+      tick();
+      const id = setInterval(tick, 500);
+      return () => clearInterval(id);
+    }
     const tick = () => {
       const left = Math.max(0, Math.ceil((endAtRef.current - Date.now()) / 1000));
       setRemaining(left);
@@ -186,7 +196,9 @@ export function MCQApp() {
       setAnswers(Array(qs.length).fill(null));
       setPerQTime(Array(qs.length).fill(0));
       setCurrent(0);
-      endAtRef.current = Date.now() + minutes * 60 * 1000;
+      setElapsed(0);
+      setShowHint(false);
+      endAtRef.current = minutes > 0 ? Date.now() + minutes * 60 * 1000 : 0;
       qStartRef.current = Date.now();
       setPhase("test");
     } catch (e: any) {
@@ -217,6 +229,7 @@ export function MCQApp() {
     if (idx < 0 || idx >= questions.length) return;
     recordTimeForCurrent();
     setCurrent(idx);
+    setShowHint(false);
   }
 
   function finishTest() {
@@ -305,13 +318,15 @@ export function MCQApp() {
 
             <div className="flex flex-wrap items-end gap-3">
               <div>
-                <label className="block text-sm font-medium">Total time (minutes)</label>
+                <label className="block text-sm font-medium">
+                  Total time (minutes) <span className="text-xs text-muted-foreground">— 0 = unlimited</span>
+                </label>
                 <input
                   type="number"
-                  min={1}
+                  min={0}
                   max={600}
                   value={minutes}
-                  onChange={(e) => setMinutes(Math.max(1, Number(e.target.value) || 1))}
+                  onChange={(e) => setMinutes(Math.max(0, Number(e.target.value) || 0))}
                   className="mt-1 w-32 rounded-md border border-input bg-background px-3 py-2 text-sm"
                 />
               </div>
@@ -366,10 +381,10 @@ export function MCQApp() {
             </div>
             <div
               className={`font-mono text-lg font-semibold ${
-                remaining < 60 ? "text-destructive" : ""
+                minutes > 0 && remaining < 60 ? "text-destructive" : ""
               }`}
             >
-              {fmt(remaining)}
+              {minutes === 0 ? `∞ ${fmt(elapsed)}` : fmt(remaining)}
             </div>
           </div>
 
@@ -380,6 +395,22 @@ export function MCQApp() {
               </div>
             )}
             <h2 className="text-lg font-semibold leading-snug">{q.question}</h2>
+            {q.hint && (
+              <div className="mt-3">
+                <button
+                  type="button"
+                  onClick={() => setShowHint((v) => !v)}
+                  className="rounded-md border border-input bg-background px-3 py-1.5 text-xs font-medium hover:bg-accent"
+                >
+                  {showHint ? "Hide hint" : "Show hint"}
+                </button>
+                {showHint && (
+                  <p className="mt-2 rounded-md bg-muted px-3 py-2 text-sm text-muted-foreground">
+                    💡 {q.hint}
+                  </p>
+                )}
+              </div>
+            )}
             <div className="mt-4 grid gap-2">
               {q.options.map((opt, i) => {
                 const selected = answers[current] === i;

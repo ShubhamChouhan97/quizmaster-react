@@ -1,11 +1,24 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { supabase } from "@/integrations/supabase/client";
+
+type DbQuestion = {
+  id: string;
+  domain: string | null;
+  scenario: string;
+  options: Record<string, string> | string[];
+  correct_answer: string;
+  hint: string | null;
+  rationale_correct: string | null;
+  rationale_incorrect: string | null;
+};
 
 type Question = {
+  id: string;
+  domain?: string;
   question: string;
   options: string[];
-  optionKeys?: string[]; // e.g. ["A","B","C","D"] if source used a map
+  optionKeys: string[];
   answerIndex: number;
-  domain?: string;
   hint?: string;
   rationaleCorrect?: string;
   rationaleIncorrect?: string;
@@ -13,116 +26,38 @@ type Question = {
 
 type Phase = "setup" | "test" | "results";
 
-const LS_JSON = "mcq.jsonInput";
 const LS_TIME = "mcq.totalMinutes";
-const LS_LAST = "mcq.lastResult";
+const LS_COUNT = "mcq.qCount";
 
-function normalize(raw: unknown): { questions: Question[]; title?: string } {
-  let data: any = raw;
-  if (typeof raw === "string") data = JSON.parse(raw);
-  let title: string | undefined;
-  let list: any[];
-  if (Array.isArray(data)) {
-    list = data;
-  } else if (data && Array.isArray(data.questions)) {
-    list = data.questions;
-    title = data.module_info?.title ?? data.title;
+function normalize(row: DbQuestion): Question {
+  let optionKeys: string[];
+  let optionsArr: string[];
+  if (Array.isArray(row.options)) {
+    optionsArr = row.options.map(String);
+    optionKeys = optionsArr.map((_, i) => String.fromCharCode(65 + i));
   } else {
-    throw new Error("JSON must be an array of questions or have a 'questions' array");
+    optionKeys = Object.keys(row.options);
+    optionsArr = optionKeys.map((k) => String((row.options as Record<string, string>)[k]));
   }
-
-  const questions = list.map((item: any, i: number) => {
-    const question: string | undefined =
-      item.question ?? item.scenario ?? item.q ?? item.text;
-
-    // options can be array or object map ({A:"...", B:"..."})
-    let optionsArr: string[];
-    let optionKeys: string[] | undefined;
-    const rawOpts = item.options ?? item.choices;
-    if (Array.isArray(rawOpts)) {
-      optionsArr = rawOpts.map(String);
-    } else if (rawOpts && typeof rawOpts === "object") {
-      optionKeys = Object.keys(rawOpts);
-      optionsArr = optionKeys.map((k) => String(rawOpts[k]));
-    } else {
-      throw new Error(`Question ${i + 1}: missing options`);
-    }
-
-    if (!question || optionsArr.length < 2) {
-      throw new Error(`Question ${i + 1} is missing question/options`);
-    }
-
-    const ans = item.answer ?? item.correct ?? item.correctAnswer ?? item.correct_answer;
-    let answerIndex: number;
-    if (typeof ans === "number") {
-      answerIndex = ans;
-    } else if (typeof ans === "string") {
-      // try option key match first (e.g. "A","B")
-      if (optionKeys) {
-        const ki = optionKeys.indexOf(ans);
-        if (ki !== -1) answerIndex = ki;
-        else {
-          const vi = optionsArr.indexOf(ans);
-          if (vi !== -1) answerIndex = vi;
-          else {
-            const asNum = Number(ans);
-            if (!Number.isNaN(asNum)) answerIndex = asNum;
-            else throw new Error(`Question ${i + 1}: answer "${ans}" not in options`);
-          }
-        }
-      } else {
-        const asNum = Number(ans);
-        if (!Number.isNaN(asNum)) {
-          answerIndex = asNum;
-        } else {
-          const vi = optionsArr.indexOf(ans);
-          if (vi !== -1) answerIndex = vi;
-          else {
-            // letter like "A" mapped to index
-            const upper = ans.trim().toUpperCase();
-            if (/^[A-Z]$/.test(upper)) answerIndex = upper.charCodeAt(0) - 65;
-            else throw new Error(`Question ${i + 1}: answer not found in options`);
-          }
-        }
-      }
-    } else {
-      throw new Error(`Question ${i + 1} is missing an answer`);
-    }
-
-    if (answerIndex < 0 || answerIndex >= optionsArr.length)
-      throw new Error(`Question ${i + 1}: answer index out of range`);
-
-    return {
-      question,
-      options: optionsArr,
-      optionKeys,
-      answerIndex,
-      domain: item.domain,
-      hint: item.hint,
-      rationaleCorrect: item.rationales?.correct,
-      rationaleIncorrect: item.rationales?.incorrect,
-    } as Question;
-  });
-
-  return { questions, title };
+  const ans = row.correct_answer;
+  let answerIndex = optionKeys.indexOf(ans);
+  if (answerIndex === -1) {
+    const upper = ans.trim().toUpperCase();
+    if (/^[A-Z]$/.test(upper)) answerIndex = upper.charCodeAt(0) - 65;
+  }
+  if (answerIndex < 0 || answerIndex >= optionsArr.length) answerIndex = 0;
+  return {
+    id: row.id,
+    domain: row.domain ?? undefined,
+    question: row.scenario,
+    options: optionsArr,
+    optionKeys,
+    answerIndex,
+    hint: row.hint ?? undefined,
+    rationaleCorrect: row.rationale_correct ?? undefined,
+    rationaleIncorrect: row.rationale_incorrect ?? undefined,
+  };
 }
-
-const SAMPLE = JSON.stringify(
-  [
-    {
-      question: "What is 2 + 2?",
-      options: ["3", "4", "5", "22"],
-      answer: 1,
-    },
-    {
-      question: "Capital of France?",
-      options: ["Berlin", "Madrid", "Paris", "Rome"],
-      answer: 2,
-    },
-  ],
-  null,
-  2
-);
 
 function fmt(secs: number) {
   const s = Math.max(0, Math.floor(secs));
@@ -131,42 +66,62 @@ function fmt(secs: number) {
   return `${m}:${r.toString().padStart(2, "0")}`;
 }
 
+function shuffle<T>(arr: T[]): T[] {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
 export function MCQApp() {
   const [phase, setPhase] = useState<Phase>("setup");
-  const [jsonText, setJsonText] = useState("");
   const [minutes, setMinutes] = useState(10);
+  const [qCount, setQCount] = useState(10);
+  const [available, setAvailable] = useState<number>(0);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
 
   const [questions, setQuestions] = useState<Question[]>([]);
   const [current, setCurrent] = useState(0);
+  // null = unanswered, number = locked selection
   const [answers, setAnswers] = useState<(number | null)[]>([]);
   const [perQTime, setPerQTime] = useState<number[]>([]);
   const [remaining, setRemaining] = useState(0);
-  const [showHint, setShowHint] = useState(false);
   const [elapsed, setElapsed] = useState(0);
+  const [showHint, setShowHint] = useState(false);
+
+  const [globalStats, setGlobalStats] = useState<{ total_correct: number; total_wrong: number } | null>(null);
 
   const qStartRef = useRef<number>(0);
   const endAtRef = useRef<number>(0);
 
-  const [lastResult, setLastResult] = useState<any>(null);
-  const [moduleTitle, setModuleTitle] = useState<string | undefined>(undefined);
-
+  // Load saved prefs + counts + global stats
   useEffect(() => {
-    setJsonText(localStorage.getItem(LS_JSON) ?? "");
     const t = localStorage.getItem(LS_TIME);
-    if (t) setMinutes(Number(t) || 10);
-    const last = localStorage.getItem(LS_LAST);
-    if (last) {
-      try {
-        setLastResult(JSON.parse(last));
-      } catch {}
-    }
+    if (t !== null) setMinutes(Number(t) || 0);
+    const c = localStorage.getItem(LS_COUNT);
+    if (c) setQCount(Math.max(1, Number(c) || 10));
+
+    (async () => {
+      const { count } = await supabase
+        .from("questions")
+        .select("*", { count: "exact", head: true });
+      setAvailable(count ?? 0);
+      const { data } = await supabase
+        .from("stats")
+        .select("total_correct,total_wrong")
+        .eq("id", "global")
+        .maybeSingle();
+      if (data) setGlobalStats(data);
+    })();
   }, []);
 
+  // Timer
   useEffect(() => {
     if (phase !== "test") return;
     if (minutes === 0) {
-      // untimed: count up
       const startedAt = Date.now() - elapsed * 1000;
       const tick = () => setElapsed(Math.floor((Date.now() - startedAt) / 1000));
       tick();
@@ -184,17 +139,35 @@ export function MCQApp() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase]);
 
-  function startTest() {
+  async function refreshStats() {
+    const { data } = await supabase
+      .from("stats")
+      .select("total_correct,total_wrong")
+      .eq("id", "global")
+      .maybeSingle();
+    if (data) setGlobalStats(data);
+  }
+
+  async function startTest() {
     setError(null);
+    setLoading(true);
     try {
-      const { questions: qs, title } = normalize(jsonText);
-      if (qs.length === 0) throw new Error("No questions found");
-      localStorage.setItem(LS_JSON, jsonText);
       localStorage.setItem(LS_TIME, String(minutes));
-      setModuleTitle(title);
-      setQuestions(qs);
-      setAnswers(Array(qs.length).fill(null));
-      setPerQTime(Array(qs.length).fill(0));
+      localStorage.setItem(LS_COUNT, String(qCount));
+
+      // Fetch a chunk and shuffle client-side. For larger pools, grab up to 500 rows.
+      const fetchLimit = Math.min(Math.max(qCount * 5, 50), 1000);
+      const { data, error: err } = await supabase
+        .from("questions")
+        .select("id,domain,scenario,options,correct_answer,hint,rationale_correct,rationale_incorrect")
+        .limit(fetchLimit);
+      if (err) throw err;
+      if (!data || data.length === 0) throw new Error("No questions available");
+      const picked = shuffle(data as unknown as DbQuestion[]).slice(0, qCount).map(normalize);
+
+      setQuestions(picked);
+      setAnswers(Array(picked.length).fill(null));
+      setPerQTime(Array(picked.length).fill(0));
       setCurrent(0);
       setElapsed(0);
       setShowHint(false);
@@ -202,27 +175,39 @@ export function MCQApp() {
       qStartRef.current = Date.now();
       setPhase("test");
     } catch (e: any) {
-      setError(e.message || "Invalid JSON");
+      setError(e.message || "Failed to load questions");
+    } finally {
+      setLoading(false);
     }
   }
 
   function recordTimeForCurrent() {
     const now = Date.now();
-    const elapsed = (now - qStartRef.current) / 1000;
+    const dt = (now - qStartRef.current) / 1000;
     qStartRef.current = now;
     setPerQTime((prev) => {
       const next = [...prev];
-      next[current] = (next[current] || 0) + elapsed;
+      next[current] = (next[current] || 0) + dt;
       return next;
     });
   }
 
-  function selectAnswer(i: number) {
+  async function selectAnswer(i: number) {
+    if (answers[current] !== null) return; // locked
+    const q = questions[current];
+    const isCorrect = i === q.answerIndex;
     setAnswers((prev) => {
       const next = [...prev];
       next[current] = i;
       return next;
     });
+    // Fire-and-forget DB update for global tally
+    try {
+      await supabase.rpc("record_answer", { is_correct: isCorrect });
+      refreshStats();
+    } catch {
+      // swallow — UI keeps working offline
+    }
   }
 
   function goTo(idx: number) {
@@ -234,23 +219,6 @@ export function MCQApp() {
 
   function finishTest() {
     recordTimeForCurrent();
-    setPerQTime((prevTimes) => {
-      const score = answers.reduce<number>(
-        (acc, a, i) => acc + (a !== null && a === questions[i].answerIndex ? 1 : 0),
-        0
-      );
-      const result = {
-        at: new Date().toISOString(),
-        score,
-        total: questions.length,
-        questions,
-        answers,
-        perQTime: prevTimes,
-      };
-      localStorage.setItem(LS_LAST, JSON.stringify(result));
-      setLastResult(result);
-      return prevTimes;
-    });
     setPhase("results");
   }
 
@@ -260,66 +228,63 @@ export function MCQApp() {
     setQuestions([]);
     setAnswers([]);
     setPerQTime([]);
-  }
-
-  async function onFile(file: File) {
-    const text = await file.text();
-    setJsonText(text);
+    refreshStats();
   }
 
   const totalAnswered = useMemo(() => answers.filter((a) => a !== null).length, [answers]);
+  const score = useMemo(
+    () =>
+      answers.reduce<number>(
+        (acc, a, i) => acc + (a !== null && a === questions[i]?.answerIndex ? 1 : 0),
+        0
+      ),
+    [answers, questions]
+  );
 
+  // ---------- SETUP ----------
   if (phase === "setup") {
     return (
       <div className="min-h-screen bg-background text-foreground">
         <div className="mx-auto max-w-3xl px-4 py-10">
           <h1 className="text-3xl font-bold tracking-tight">MCQ Test Runner</h1>
           <p className="mt-2 text-sm text-muted-foreground">
-            Paste JSON or upload a .json file. Format: an array of{" "}
-            <code className="rounded bg-muted px-1">{`{ question, options, answer }`}</code>.
+            {available > 0
+              ? `${available.toLocaleString()} questions available in the bank.`
+              : "Loading question bank…"}
           </p>
 
-          <div className="mt-6 grid gap-4 rounded-lg border border-border bg-card p-5">
-            <div className="flex flex-wrap items-center gap-3">
-              <label className="inline-flex cursor-pointer items-center rounded-md border border-input bg-background px-3 py-2 text-sm font-medium hover:bg-accent">
-                Upload JSON
-                <input
-                  type="file"
-                  accept="application/json,.json"
-                  className="hidden"
-                  onChange={(e) => e.target.files?.[0] && onFile(e.target.files[0])}
-                />
-              </label>
-              <button
-                type="button"
-                onClick={() => setJsonText(SAMPLE)}
-                className="rounded-md border border-input bg-background px-3 py-2 text-sm font-medium hover:bg-accent"
-              >
-                Load sample
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setJsonText("");
-                  localStorage.removeItem(LS_JSON);
-                }}
-                className="rounded-md border border-input bg-background px-3 py-2 text-sm font-medium hover:bg-accent"
-              >
-                Clear
-              </button>
+          {globalStats && (
+            <div className="mt-4 flex flex-wrap gap-3 text-sm">
+              <div className="rounded-md border border-border bg-card px-3 py-2">
+                <span className="text-muted-foreground">Global correct: </span>
+                <span className="font-semibold text-primary">{globalStats.total_correct}</span>
+              </div>
+              <div className="rounded-md border border-border bg-card px-3 py-2">
+                <span className="text-muted-foreground">Global wrong: </span>
+                <span className="font-semibold text-destructive">{globalStats.total_wrong}</span>
+              </div>
             </div>
+          )}
 
-            <textarea
-              value={jsonText}
-              onChange={(e) => setJsonText(e.target.value)}
-              placeholder="Paste your questions JSON here..."
-              className="h-72 w-full rounded-md border border-input bg-background p-3 font-mono text-sm"
-            />
-
-            <div className="flex flex-wrap items-end gap-3">
+          <div className="mt-6 grid gap-4 rounded-lg border border-border bg-card p-5">
+            <div className="grid gap-4 sm:grid-cols-2">
               <div>
                 <label className="block text-sm font-medium">
-                  Total time (minutes) <span className="text-xs text-muted-foreground">— 0 = unlimited</span>
+                  Number of questions
+                </label>
+                <input
+                  type="number"
+                  min={1}
+                  max={Math.max(1, available || 9999)}
+                  value={qCount}
+                  onChange={(e) => setQCount(Math.max(1, Number(e.target.value) || 1))}
+                  className="mt-1 w-32 rounded-md border border-input bg-background px-3 py-2 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium">
+                  Total time (minutes){" "}
+                  <span className="text-xs text-muted-foreground">— 0 = unlimited</span>
                 </label>
                 <input
                   type="number"
@@ -330,13 +295,15 @@ export function MCQApp() {
                   className="mt-1 w-32 rounded-md border border-input bg-background px-3 py-2 text-sm"
                 />
               </div>
-              <button
-                onClick={startTest}
-                className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-              >
-                Start Test
-              </button>
             </div>
+
+            <button
+              onClick={startTest}
+              disabled={loading || available === 0}
+              className="w-fit rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            >
+              {loading ? "Loading…" : "Start Test"}
+            </button>
 
             {error && (
               <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
@@ -344,39 +311,23 @@ export function MCQApp() {
               </p>
             )}
           </div>
-
-          {lastResult && (
-            <div className="mt-6 rounded-lg border border-border bg-card p-5">
-              <div className="flex items-center justify-between">
-                <h2 className="text-lg font-semibold">Last result</h2>
-                <button
-                  onClick={() => setPhase("results")}
-                  className="text-sm font-medium text-primary hover:underline"
-                >
-                  View details →
-                </button>
-              </div>
-              <p className="mt-1 text-sm text-muted-foreground">
-                Score: {lastResult.score}/{lastResult.total} ·{" "}
-                {new Date(lastResult.at).toLocaleString()}
-              </p>
-            </div>
-          )}
         </div>
       </div>
     );
   }
 
+  // ---------- TEST ----------
   if (phase === "test") {
     const q = questions[current];
+    const userAns = answers[current];
+    const locked = userAns !== null;
+    const isCorrect = locked && userAns === q.answerIndex;
+
     return (
       <div className="min-h-screen bg-background text-foreground">
         <div className="mx-auto max-w-3xl px-4 py-6">
           <div className="flex items-center justify-between rounded-lg border border-border bg-card px-4 py-3">
             <div className="text-sm text-muted-foreground">
-              {moduleTitle && (
-                <div className="font-medium text-foreground">{moduleTitle}</div>
-              )}
               Question {current + 1} / {questions.length} · Answered {totalAnswered}
             </div>
             <div
@@ -395,44 +346,86 @@ export function MCQApp() {
               </div>
             )}
             <h2 className="text-lg font-semibold leading-snug">{q.question}</h2>
-            {q.hint && (
+
+            {q.hint && !locked && (
               <div className="mt-3">
                 <button
                   type="button"
                   onClick={() => setShowHint((v) => !v)}
                   className="rounded-md border border-input bg-background px-3 py-1.5 text-xs font-medium hover:bg-accent"
                 >
-                  {showHint ? "Hide hint" : "Show hint"}
+                  {showHint ? "Hide hint" : "💡 Show hint"}
                 </button>
                 {showHint && (
                   <p className="mt-2 rounded-md bg-muted px-3 py-2 text-sm text-muted-foreground">
-                    💡 {q.hint}
+                    {q.hint}
                   </p>
                 )}
               </div>
             )}
+
             <div className="mt-4 grid gap-2">
               {q.options.map((opt, i) => {
-                const selected = answers[current] === i;
-                const key = q.optionKeys?.[i] ?? String.fromCharCode(65 + i);
+                const selected = userAns === i;
+                const isAnsKey = i === q.answerIndex;
+                let cls = "border-input bg-background hover:bg-accent";
+                if (locked) {
+                  if (isAnsKey) cls = "border-primary bg-primary/15";
+                  else if (selected) cls = "border-destructive bg-destructive/10";
+                  else cls = "border-input bg-background opacity-70";
+                } else if (selected) {
+                  cls = "border-primary bg-primary/10";
+                }
                 return (
                   <button
                     key={i}
                     onClick={() => selectAnswer(i)}
-                    className={`rounded-md border px-4 py-3 text-left text-sm transition-colors ${
-                      selected
-                        ? "border-primary bg-primary/10"
-                        : "border-input bg-background hover:bg-accent"
-                    }`}
+                    disabled={locked}
+                    className={`rounded-md border px-4 py-3 text-left text-sm transition-colors ${cls}`}
                   >
                     <span className="mr-2 font-mono text-xs text-muted-foreground">
-                      {key}.
+                      {q.optionKeys[i]}.
                     </span>
                     {opt}
+                    {locked && isAnsKey && (
+                      <span className="ml-2 text-xs font-semibold text-primary">✓ Correct</span>
+                    )}
+                    {locked && selected && !isAnsKey && (
+                      <span className="ml-2 text-xs font-semibold text-destructive">✗ Your pick</span>
+                    )}
                   </button>
                 );
               })}
             </div>
+
+            {locked && (
+              <div className="mt-4 space-y-2 rounded-md border border-border bg-background p-4 text-sm">
+                <div
+                  className={`inline-block rounded px-2 py-0.5 text-xs font-semibold ${
+                    isCorrect
+                      ? "bg-primary/15 text-primary"
+                      : "bg-destructive/15 text-destructive"
+                  }`}
+                >
+                  {isCorrect ? "Correct!" : "Incorrect"}
+                </div>
+                {q.rationaleCorrect && (
+                  <p>
+                    <span className="font-semibold">Why {q.optionKeys[q.answerIndex]} is correct: </span>
+                    <span className="text-muted-foreground">{q.rationaleCorrect}</span>
+                  </p>
+                )}
+                {q.rationaleIncorrect && (
+                  <p>
+                    <span className="font-semibold">Why the others are wrong: </span>
+                    <span className="text-muted-foreground">{q.rationaleIncorrect}</span>
+                  </p>
+                )}
+                {q.hint && (
+                  <p className="text-xs text-muted-foreground">💡 Hint: {q.hint}</p>
+                )}
+              </div>
+            )}
 
             <div className="mt-6 flex flex-wrap items-center justify-between gap-2">
               <button
@@ -442,22 +435,8 @@ export function MCQApp() {
               >
                 Previous
               </button>
-              <div className="flex flex-wrap gap-1">
-                {questions.map((_, i) => (
-                  <button
-                    key={i}
-                    onClick={() => goTo(i)}
-                    className={`h-8 w-8 rounded text-xs font-medium ${
-                      i === current
-                        ? "bg-primary text-primary-foreground"
-                        : answers[i] !== null
-                          ? "bg-primary/20 text-foreground"
-                          : "bg-muted text-muted-foreground"
-                    }`}
-                  >
-                    {i + 1}
-                  </button>
-                ))}
+              <div className="text-xs text-muted-foreground">
+                Score so far: {score} / {totalAnswered}
               </div>
               {current < questions.length - 1 ? (
                 <button
@@ -475,15 +454,37 @@ export function MCQApp() {
                 </button>
               )}
             </div>
+
+            <div className="mt-4 flex flex-wrap gap-1">
+              {questions.map((_, i) => {
+                const a = answers[i];
+                const status =
+                  a === null
+                    ? "bg-muted text-muted-foreground"
+                    : a === questions[i].answerIndex
+                      ? "bg-primary/30 text-foreground"
+                      : "bg-destructive/30 text-foreground";
+                return (
+                  <button
+                    key={i}
+                    onClick={() => goTo(i)}
+                    className={`h-7 w-7 rounded text-xs font-medium ${
+                      i === current ? "ring-2 ring-primary " : ""
+                    }${status}`}
+                  >
+                    {i + 1}
+                  </button>
+                );
+              })}
+            </div>
           </div>
         </div>
       </div>
     );
   }
 
-  // results
-  const r = lastResult;
-  if (!r) return null;
+  // ---------- RESULTS ----------
+  const totalTime = perQTime.reduce((a, b) => a + b, 0);
   return (
     <div className="min-h-screen bg-background text-foreground">
       <div className="mx-auto max-w-3xl px-4 py-10">
@@ -497,21 +498,21 @@ export function MCQApp() {
           </button>
         </div>
         <p className="mt-2 text-lg">
-          Score: <span className="font-semibold">{r.score}</span> / {r.total} ·{" "}
-          <span className="text-muted-foreground">
-            Total time:{" "}
-            {fmt(r.perQTime.reduce((a: number, b: number) => a + b, 0))}
-          </span>
+          Score: <span className="font-semibold">{score}</span> / {questions.length} ·{" "}
+          <span className="text-muted-foreground">Total time: {fmt(totalTime)}</span>
         </p>
+        {globalStats && (
+          <p className="mt-1 text-sm text-muted-foreground">
+            Global tally — correct: {globalStats.total_correct} · wrong: {globalStats.total_wrong}
+          </p>
+        )}
 
         <div className="mt-6 space-y-3">
-          {r.questions.map((q: Question, i: number) => {
-            const userAns = r.answers[i];
+          {questions.map((q, i) => {
+            const userAns = answers[i];
             const correct = userAns === q.answerIndex;
-            const keyFor = (idx: number) =>
-              q.optionKeys?.[idx] ?? String.fromCharCode(65 + idx);
             return (
-              <div key={i} className="rounded-lg border border-border bg-card p-4">
+              <div key={q.id} className="rounded-lg border border-border bg-card p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div className="text-sm font-medium">
                     {q.domain && (
@@ -522,7 +523,7 @@ export function MCQApp() {
                     {i + 1}. {q.question}
                   </div>
                   <div className="shrink-0 text-xs text-muted-foreground">
-                    ⏱ {fmt(r.perQTime[i] || 0)}
+                    ⏱ {fmt(perQTime[i] || 0)}
                   </div>
                 </div>
                 <div className="mt-2 text-sm">
@@ -535,25 +536,21 @@ export function MCQApp() {
                           : "bg-destructive/15 text-destructive"
                     }`}
                   >
-                    {correct
-                      ? "Correct"
-                      : userAns === null
-                        ? "Skipped"
-                        : "Wrong"}
+                    {correct ? "Correct" : userAns === null ? "Skipped" : "Wrong"}
                   </span>
                   <div className="mt-2 text-muted-foreground">
                     Your answer:{" "}
                     <span className="text-foreground">
                       {userAns === null
                         ? "—"
-                        : `${keyFor(userAns)}. ${q.options[userAns]}`}
+                        : `${q.optionKeys[userAns]}. ${q.options[userAns]}`}
                     </span>
                   </div>
                   {!correct && (
                     <div className="text-muted-foreground">
                       Correct answer:{" "}
                       <span className="text-foreground">
-                        {keyFor(q.answerIndex)}. {q.options[q.answerIndex]}
+                        {q.optionKeys[q.answerIndex]}. {q.options[q.answerIndex]}
                       </span>
                     </div>
                   )}
@@ -572,17 +569,13 @@ export function MCQApp() {
                         {q.rationaleCorrect && (
                           <p>
                             <span className="font-semibold">Why correct: </span>
-                            <span className="text-muted-foreground">
-                              {q.rationaleCorrect}
-                            </span>
+                            <span className="text-muted-foreground">{q.rationaleCorrect}</span>
                           </p>
                         )}
                         {q.rationaleIncorrect && (
                           <p>
                             <span className="font-semibold">Why others are wrong: </span>
-                            <span className="text-muted-foreground">
-                              {q.rationaleIncorrect}
-                            </span>
+                            <span className="text-muted-foreground">{q.rationaleIncorrect}</span>
                           </p>
                         )}
                       </div>

@@ -108,6 +108,7 @@ export function MCQApp() {
   const [showHint, setShowHint] = useState(false);
 
   const [globalStats, setGlobalStats] = useState<{ total_correct: number; total_wrong: number } | null>(null);
+  const [history, setHistory] = useState<History>({});
 
   const qStartRef = useRef<number>(0);
   const endAtRef = useRef<number>(0);
@@ -118,6 +119,7 @@ export function MCQApp() {
     if (t !== null) setMinutes(Number(t) || 0);
     const c = localStorage.getItem(LS_COUNT);
     if (c) setQCount(Math.max(1, Number(c) || 10));
+    setHistory(loadHistory());
 
     (async () => {
       const { count } = await supabase
@@ -216,6 +218,13 @@ export function MCQApp() {
       next[current] = i;
       return next;
     });
+    // Local per-device history (only first attempt of each question counts toward bank progress)
+    setHistory((prev) => {
+      if (prev[q.id]) return prev; // already recorded — reattempts don't double count
+      const next: History = { ...prev, [q.id]: { c: isCorrect ? 1 : 0 } };
+      saveHistory(next);
+      return next;
+    });
     // Fire-and-forget DB update for global tally
     try {
       await supabase.rpc("record_answer", { is_correct: isCorrect });
@@ -223,6 +232,18 @@ export function MCQApp() {
     } catch {
       // swallow — UI keeps working offline
     }
+  }
+
+  // Reattempt the current question: clear local lock so the user can pick again.
+  // Does NOT touch the global DB tally or the local history (so bank progress is preserved).
+  function reattemptCurrent() {
+    setAnswers((prev) => {
+      const next = [...prev];
+      next[current] = null;
+      return next;
+    });
+    setShowHint(false);
+    qStartRef.current = Date.now();
   }
 
   function goTo(idx: number) {

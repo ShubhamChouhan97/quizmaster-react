@@ -14,13 +14,83 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      questions: {
+        Row: {
+          correct_answer: string
+          created_at: string
+          domain: string | null
+          hint: string | null
+          id: string
+          options: Json
+          rationale_correct: string | null
+          rationale_incorrect: string | null
+          scenario: string
+        }
+        Insert: {
+          correct_answer: string
+          created_at?: string
+          domain?: string | null
+          hint?: string | null
+          id: string
+          options: Json
+          rationale_correct?: string | null
+          rationale_incorrect?: string | null
+          scenario: string
+        }
+        Update: {
+          correct_answer?: string
+          created_at?: string
+          domain?: string | null
+          hint?: string | null
+          id?: string
+          options?: Json
+          rationale_correct?: string | null
+          rationale_incorrect?: string | null
+          scenario?: string
+        }
+        Relationships: []
+      }
+      stats: {
+        Row: {
+          id: string
+          total_correct: number
+          total_wrong: number
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          total_correct?: number
+          total_wrong?: number
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          total_correct?: number
+          total_wrong?: number
+          updated_at?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      record_answer: {
+        Args: { is_correct: boolean }
+        Returns: {
+          id: string
+          total_correct: number
+          total_wrong: number
+          updated_at: string
+        }
+        SetofOptions: {
+          from: "*"
+          to: "stats"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
     }
     Enums: {
       [_ in never]: never

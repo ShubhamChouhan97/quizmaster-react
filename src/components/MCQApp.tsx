@@ -28,6 +28,21 @@ type Phase = "setup" | "test" | "results";
 
 const LS_TIME = "mcq.totalMinutes";
 const LS_COUNT = "mcq.qCount";
+const LS_HISTORY = "mcq.history"; // { [questionId]: { c: 0|1 } }
+
+type HistoryEntry = { c: 0 | 1 };
+type History = Record<string, HistoryEntry>;
+
+function loadHistory(): History {
+  try {
+    return JSON.parse(localStorage.getItem(LS_HISTORY) || "{}") as History;
+  } catch {
+    return {};
+  }
+}
+function saveHistory(h: History) {
+  localStorage.setItem(LS_HISTORY, JSON.stringify(h));
+}
 
 function normalize(row: DbQuestion): Question {
   let optionKeys: string[];

@@ -279,6 +279,13 @@ export function MCQApp() {
 
   // ---------- SETUP ----------
   if (phase === "setup") {
+    const attemptedIds = Object.keys(history);
+    const attempted = attemptedIds.length;
+    const localCorrect = attemptedIds.reduce((n, k) => n + (history[k].c ? 1 : 0), 0);
+    const localWrong = attempted - localCorrect;
+    const bankComplete = available > 0 && attempted >= available;
+    const pct = available > 0 ? Math.min(100, Math.round((attempted / available) * 100)) : 0;
+
     return (
       <div className="min-h-screen bg-background text-foreground">
         <div className="mx-auto max-w-3xl px-4 py-10">
@@ -288,6 +295,56 @@ export function MCQApp() {
               ? `${available.toLocaleString()} questions available in the bank.`
               : "Loading question bank…"}
           </p>
+
+          {/* Per-device bank progress */}
+          {available > 0 && (
+            <div className="mt-4 rounded-lg border border-border bg-card p-4">
+              <div className="flex items-center justify-between text-sm">
+                <span className="font-medium">Your progress through the bank</span>
+                <span className="text-muted-foreground">
+                  {attempted.toLocaleString()} / {available.toLocaleString()} ({pct}%)
+                </span>
+              </div>
+              <div className="mt-2 h-2 w-full overflow-hidden rounded bg-muted">
+                <div
+                  className="h-full bg-primary transition-all"
+                  style={{ width: `${pct}%` }}
+                />
+              </div>
+              <div className="mt-2 text-xs text-muted-foreground">
+                Your correct: <span className="font-semibold text-primary">{localCorrect}</span> ·
+                {" "}wrong: <span className="font-semibold text-destructive">{localWrong}</span>
+                {attempted > 0 && (
+                  <>
+                    {" "}· accuracy:{" "}
+                    <span className="font-semibold">
+                      {Math.round((localCorrect / attempted) * 100)}%
+                    </span>
+                  </>
+                )}
+              </div>
+              {bankComplete && (
+                <div className="mt-3 rounded-md border border-primary/40 bg-primary/10 p-3 text-sm">
+                  🏆 <span className="font-semibold">You've completed the entire bank!</span>{" "}
+                  Final score: <span className="font-semibold">{localCorrect}</span> /{" "}
+                  {available} ({Math.round((localCorrect / available) * 100)}%)
+                </div>
+              )}
+              {attempted > 0 && (
+                <button
+                  onClick={() => {
+                    if (confirm("Reset your per-device progress? Global tally is not affected.")) {
+                      saveHistory({});
+                      setHistory({});
+                    }
+                  }}
+                  className="mt-3 text-xs font-medium text-muted-foreground underline hover:text-foreground"
+                >
+                  Reset my progress
+                </button>
+              )}
+            </div>
+          )}
 
           {globalStats && (
             <div className="mt-4 flex flex-wrap gap-3 text-sm">

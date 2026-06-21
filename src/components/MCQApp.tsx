@@ -517,6 +517,17 @@ export function MCQApp() {
                 {q.hint && (
                   <p className="text-xs text-muted-foreground">💡 Hint: {q.hint}</p>
                 )}
+                <div className="pt-1">
+                  <button
+                    onClick={reattemptCurrent}
+                    className="rounded-md border border-input bg-background px-3 py-1.5 text-xs font-medium hover:bg-accent"
+                  >
+                    ↻ Reattempt
+                  </button>
+                  <span className="ml-2 text-xs text-muted-foreground">
+                    (only your first answer counts toward your bank progress)
+                  </span>
+                </div>
               </div>
             )}
 
